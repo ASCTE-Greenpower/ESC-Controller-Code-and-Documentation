@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Throttle Simulator</title>
+<!--
+  Desktop simulator for throttle_controller.ino (V22).
+  Open this file in any browser — no install needed.
+  The control logic below is a direct port of loop() in the .ino. If you change
+  tuning constants, curves or the state machine there, mirror the change here.
+-->
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --ink: #1c1f24; --muted: #6b7280;
+    --line: #e2e5ea; --accent: #16a34a; --accent-ink: #ffffff;
+    --pwm: #2563eb; --ramp: #d97706; --pot: #9ca3af; --danger: #dc2626;
+    --oled-bg: #05070a; --oled-ink: #7dd3fc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --panel: #181b21; --ink: #e8eaed; --muted: #9aa1ab;
+      --line: #2a2f37; --accent: #22c55e; --accent-ink: #06240f;
+      --pwm: #60a5fa; --ramp: #fbbf24; --pot: #6b7280; --danger: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+
+  /* Readouts */
+  .readouts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .big { font-variant-numeric: tabular-nums; font-size: 44px; font-weight: 700; line-height: 1; }
+  .big small { font-size: 18px; font-weight: 500; color: var(--muted); }
+  .lbl { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; margin-top: 10px; }
+  .bar > div { height: 100%; width: 0; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .chip b { font-weight: 600; }
+
+  /* OLED replica */
+  .oled {
+    background: var(--oled-bg); color: var(--oled-ink); border-radius: 6px;
+    font-family: ui-monospace, Consolas, monospace; padding: 8px 10px; margin-top: 14px;
+    aspect-ratio: 2 / 1; max-width: 320px; display: flex; flex-direction: column;
+  }
+  .oled .r1 { display: flex; justify-content: space-between; font-size: 12px; border-bottom: 1px solid var(--oled-ink); padding-bottom: 3px; }
+  .oled .mid { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 34px; border-bottom: 1px solid var(--oled-ink); }
+  .oled .bot { font-size: 12px; padding-top: 3px; white-space: pre; }
+
+  /* Controls */
+  .controls { display: flex; flex-direction: column; gap: 22px; }
+  .btn-wrap { display: flex; align-items: center; gap: 16px; }
+  .trigger {
+    width: 110px; height: 110px; border-radius: 50%; border: 4px solid var(--line);
+    background: var(--panel); color: var(--ink); font-weight: 700; font-size: 15px;
+    cursor: pointer; user-select: none; touch-action: none; flex-shrink: 0;
+    box-shadow: 0 4px 0 var(--line); transition: transform .05s;
+  }
+  .trigger.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); transform: translateY(3px); box-shadow: 0 1px 0 var(--line); }
+  .hint { font-size: 13px; color: var(--muted); }
+  label.check { display: flex; gap: 6px; align-items: center; font-size: 13px; margin-top: 8px; cursor: pointer; }
+
+  .pot-row { display: flex; align-items: center; gap: 12px; }
+  input[type=range] { flex: 1; accent-color: var(--pwm); height: 28px; }
+  .pot-val { font-variant-numeric: tabular-nums; min-width: 110px; text-align: right; font-size: 13px; color: var(--muted); }
+
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .modes button {
+    border: 0; background: var(--panel); color: var(--ink); padding: 12px 0; font-weight: 600;
+    cursor: pointer; font-size: 14px;
+  }
+  .modes button + button { border-left: 1px solid var(--line); }
+  .modes button.sel { background: var(--ink); color: var(--panel); }
+
+  canvas { width: 100%; height: 220px; display: block; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+  .full { grid-column: 1 / -1; }
+  .toolbar { display: flex; gap: 8px; margin-top: 10px; }
+  .toolbar button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Throttle Controller Simulator</h1>
+  <p class="sub">Runs the throttle_controller.ino (V22) ramp and state logic in a 20&nbsp;ms loop. Keys: hold <kbd>Space</kbd> for the trigger, <kbd>↑</kbd>/<kbd>↓</kbd> to move the pot, <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> for ECO/NORMAL/SPORT.</p>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Output</h2>
+      <div class="readouts">
+        <div>
+          <div class="lbl">PWM to ESC</div>
+          <div class="big" id="outPct">0.0<small>%</small></div>
+          <div class="meta">duty <span id="outDuty">0</span>/255 · 31.4&nbsp;kHz</div>
+          <div class="bar"><div id="outBar" style="background:var(--pwm)"></div></div>
+        </div>
+        <div>
+          <div class="lbl">Ramp</div>
+          <div class="big" id="rampPct">0.0<small>%</small></div>
+          <div class="meta">resume target <span id="resume">0.0</span>%</div>
+          <div class="bar"><div id="rampBar" style="background:var(--ramp)"></div></div>
+        </div>
+      </div>
+      <div class="chips">
+        <span class="chip">Mode <b id="chipMode">NORMAL</b></span>
+        <span class="chip">State <b id="chipState">IDLE</b></span>
+        <span class="chip">Pot <b id="chipPot">0.0%</b></span>
+        <span class="chip">Trigger <b id="chipTrig">OFF</b></span>
+      </div>
+      <div class="oled" aria-label="OLED display replica">
+        <div class="r1"><span id="oMode">NORMAL</span><span id="oState">IDLE</span></div>
+        <div class="mid" id="oOut">0.0%</div>
+        <div class="bot" id="oBot">Pot:  0.0%
+Ramp: 0.0%</div>
+      </div>
+    </section>
+
+    <section class="panel controls">
+      <div>
+        <h2>Trigger button</h2>
+        <div class="btn-wrap">
+          <button class="trigger" id="trigger">HOLD</button>
+          <div>
+            <div class="hint">Momentary, like the real button — output is live only while held. Release to see decay, press again to see re-engage.</div>
+            <label class="check"><input type="checkbox" id="latch"> Latch (click toggles on/off)</label>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2>Potentiometer</h2>
+        <div class="pot-row">
+          <input type="range" id="pot" min="0" max="4095" step="1" value="0">
+          <span class="pot-val" id="potRaw">ADC 0 · 0.0%</span>
+        </div>
+      </div>
+
+      <div>
+        <h2>Mode selector</h2>
+        <div class="modes" id="modes">
+          <button data-mode="0">ECO</button>
+          <button data-mode="1" class="sel">NORMAL</button>
+          <button data-mode="2">SPORT</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel full">
+      <h2>Last 30 seconds</h2>
+      <canvas id="chart"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--pwm)"></i>PWM output</span>
+        <span><i style="background:var(--ramp)"></i>Ramp</span>
+        <span><i style="background:var(--pot)"></i>Pot (smoothed)</span>
+      </div>
+      <div class="toolbar">
+        <button id="pause">Pause</button>
+        <button id="reset">Reset controller</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+// ═════════════════════════════════════════════════════════════════════════════
+// Port of throttle_controller.ino — keep in sync with the firmware.
+// ═════════════════════════════════════════════════════════════════════════════
+const ECO = 0, NORMAL = 1, SPORT = 2;
+const IDLE = 0, REENGAGING = 1, RAMPING = 2, HOLDING = 3;
+
+const ECO_CLIMB_RATE    = 0.00333;
+const NORMAL_CLIMB_RATE = 0.00667;
+const SPORT_CLIMB_RATE  = 0.02000;
+const REENGAGE_CLIMB_RATE = 0.03333;
+const ECO_DECAY_RATE    = 0.01000;
+const NORMAL_DECAY_RATE = 0.01333;
+const SPORT_DECAY_RATE  = 0.01333;
+const RESUME_THRESHOLD = 2.0;
+const POT_ALPHA        = 0.2;
+const LOOP_MS          = 20;
+
+let currentMode = NORMAL, currentState = IDLE;
+let currentPwm = 0, rampPwm = 0, rampStartPwm = 0, resumeTarget = 0, smoothedPot = 0;
+let prevTrigger = false;
+
+// Virtual inputs (stand-ins for digitalRead / analogRead)
+const inputs = { trigger: false, adc: 0, mode: NORMAL };
+
+const ecoMultiplier    = p => Math.exp(1.8 * p) / 2.047;
+const normalMultiplier = p => (1 / (1 + Math.exp(-6 * (p - 0.15)))) * 1.5 + 0.15;
+const sportMultiplier  = p => p < 0.01 ? 5.0 : Math.min(0.5 / Math.sqrt(p), 5.0);
+
+const getClimbRate  = m => m === ECO ? ECO_CLIMB_RATE : m === SPORT ? SPORT_CLIMB_RATE : NORMAL_CLIMB_RATE;
+const getMultiplier = (m, p) => m === ECO ? ecoMultiplier(p) : m === SPORT ? sportMultiplier(p) : normalMultiplier(p);
+const getDecayRate  = m => m === SPORT ? SPORT_DECAY_RATE : m === ECO ? ECO_DECAY_RATE : NORMAL_DECAY_RATE;
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const modeName  = m => ["ECO", "NORMAL", "SPORT"][m];
+const stateName = s => ["IDLE", "REENG", "RAMP", "HOLD"][s];
+
+function controllerStep(dt) {
+  currentMode = inputs.mode;
+
+  let rawPot = (inputs.adc / 4095) * 100;
+  if (rawPot > 99) rawPot = 100;
+  if (rawPot < 1)  rawPot = 0;
+  smoothedPot = POT_ALPHA * rawPot + (1 - POT_ALPHA) * smoothedPot;
+  const potPct = smoothedPot;
+
+  const triggerHeld  = inputs.trigger;
+  const justPressed  = triggerHeld && !prevTrigger;
+  const justReleased = !triggerHeld && prevTrigger;
+  prevTrigger = triggerHeld;
+
+  if (justReleased) currentState = IDLE;
+
+  if (justPressed) {
+    if (currentPwm > RESUME_THRESHOLD) {
+      resumeTarget = currentPwm;
+      rampPwm = 0; currentPwm = 0;
+      currentState = REENGAGING;
+    } else {
+      rampStartPwm = 0; rampPwm = 0; currentPwm = 0;
+      currentState = RAMPING;
+    }
+  }
+
+  switch (currentState) {
+    case IDLE: {
+      const drop = getDecayRate(currentMode) * dt;
+      rampPwm    = clamp(rampPwm    - drop, 0, 100);
+      currentPwm = clamp(currentPwm - drop, 0, 100);
+      break;
+    }
+    case REENGAGING: {
+      const progress = clamp(rampPwm / 100, 0, 1);
+      const step = REENGAGE_CLIMB_RATE * sportMultiplier(progress) * dt;
+      rampPwm = clamp(rampPwm + step, 0, resumeTarget);
+      currentPwm = rampPwm;
+      if (rampPwm >= resumeTarget - 0.1) {
+        rampPwm = resumeTarget; currentPwm = resumeTarget; rampStartPwm = resumeTarget;
+        currentState = RAMPING;
+      }
+      break;
+    }
+    case RAMPING: {
+      if (rampPwm >= potPct) {
+        currentPwm = potPct; rampPwm = potPct;
+        currentState = HOLDING;
+        break;
+      }
+      const progress = clamp((rampPwm - rampStartPwm) / 100, 0, 1);
+      const step = getClimbRate(currentMode) * getMultiplier(currentMode, progress) * dt;
+      rampPwm = clamp(rampPwm + step, 0, potPct);
+      currentPwm = rampPwm;
+      if (rampPwm >= potPct) currentState = HOLDING;
+      break;
+    }
+    case HOLDING: {
+      if (potPct < rampPwm - 0.5) {
+        currentPwm = potPct; rampPwm = potPct;
+      } else if (potPct > rampPwm + 0.5) {
+        rampStartPwm = rampPwm;
+        currentState = RAMPING;
+      }
+      break;
+    }
+  }
+
+  const outputPct = triggerHeld ? clamp(currentPwm, 0, 100) : 0;
+  const duty = Math.trunc(outputPct / 100 * 255);   // ledcWrite value
+  return { potPct, outputPct, duty, triggerHeld };
+}
+
+function resetController() {
+  currentState = IDLE;
+  currentPwm = rampPwm = rampStartPwm = resumeTarget = smoothedPot = 0;
+  prevTrigger = false;
+  history.length = 0;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// UI
+// ═════════════════════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const triggerBtn = $("trigger"), latchBox = $("latch"), potSlider = $("pot");
+
+function setTrigger(on) {
+  inputs.trigger = on;
+  triggerBtn.classList.toggle("on", on);
+  triggerBtn.textContent = on ? "ON" : (latchBox.checked ? "OFF" : "HOLD");
+}
+triggerBtn.addEventListener("pointerdown", e => {
+  triggerBtn.setPointerCapture(e.pointerId);
+  setTrigger(latchBox.checked ? !inputs.trigger : true);
+});
+triggerBtn.addEventListener("pointerup",     () => { if (!latchBox.checked) setTrigger(false); });
+triggerBtn.addEventListener("pointercancel", () => { if (!latchBox.checked) setTrigger(false); });
+latchBox.addEventListener("change", () => setTrigger(false));
+
+function setAdc(v) {
+  inputs.adc = clamp(Math.round(v), 0, 4095);
+  potSlider.value = inputs.adc;
+}
+potSlider.addEventListener("input", () => setAdc(+potSlider.value));
+
+function setMode(m) {
+  inputs.mode = m;
+  document.querySelectorAll("#modes button").forEach(b => b.classList.toggle("sel", +b.dataset.mode === m));
+}
+document.querySelectorAll("#modes button").forEach(b => b.addEventListener("click", () => setMode(+b.dataset.mode)));
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.key !== " ") return;
+  if (e.key === " ") {
+    e.preventDefault();
+    if (e.repeat) return;
+    setTrigger(latchBox.checked ? !inputs.trigger : true);
+  }
+  else if (e.key === "ArrowUp")   { e.preventDefault(); setAdc(inputs.adc + 41 * (e.shiftKey ? 5 : 1)); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); setAdc(inputs.adc - 41 * (e.shiftKey ? 5 : 1)); }
+  else if (e.key === "1") setMode(ECO);
+  else if (e.key === "2") setMode(NORMAL);
+  else if (e.key === "3") setMode(SPORT);
+});
+document.addEventListener("keyup", e => {
+  if (e.key === " " && !latchBox.checked) setTrigger(false);
+});
+window.addEventListener("blur", () => { if (!latchBox.checked) setTrigger(false); });
+
+// ── Chart ────────────────────────────────────────────────────────────────────
+const WINDOW_MS = 30000;
+const history = [];   // {t, out, ramp, pot}
+const canvas = $("chart"), ctx = canvas.getContext("2d");
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function drawChart(now) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const padL = 34, padB = 18, pw = w - padL - 4, ph = h - padB - 6;
+  const x = t => padL + pw * (1 - (now - t) / WINDOW_MS);
+  const y = v => 6 + ph * (1 - v / 100);
+
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.fillStyle = css("--muted");
+  ctx.strokeStyle = css("--line");
+  ctx.lineWidth = 1;
+  for (const v of [0, 25, 50, 75, 100]) {
+    ctx.beginPath(); ctx.moveTo(padL, y(v)); ctx.lineTo(w - 4, y(v)); ctx.stroke();
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(v + "%", padL - 6, y(v));
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let s = 0; s <= 30; s += 5) ctx.fillText(s === 0 ? "now" : `-${s}s`, padL + pw * (1 - s / 30), h - padB + 4);
+
+  const line = (key, color, width) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = "round";
+    ctx.beginPath();
+    history.forEach((p, i) => i ? ctx.lineTo(x(p.t), y(p[key])) : ctx.moveTo(x(p.t), y(p[key])));
+    ctx.stroke();
+  };
+  line("pot",  css("--pot"),  1.5);
+  line("ramp", css("--ramp"), 2);
+  line("out",  css("--pwm"),  2.5);
+}
+
+// ── Loop ─────────────────────────────────────────────────────────────────────
+let paused = false, simTime = 0, lastReal = performance.now(), acc = 0, last = null;
+$("pause").addEventListener("click", () => { paused = !paused; $("pause").textContent = paused ? "Resume" : "Pause"; });
+$("reset").addEventListener("click", () => { resetController(); last = null; });
+
+function render(r) {
+  $("outPct").innerHTML  = r.outputPct.toFixed(1) + "<small>%</small>";
+  $("outDuty").textContent = r.duty;
+  $("outBar").style.width  = r.outputPct + "%";
+  $("rampPct").innerHTML = rampPwm.toFixed(1) + "<small>%</small>";
+  $("rampBar").style.width = rampPwm + "%";
+  $("resume").textContent  = resumeTarget.toFixed(1);
+  $("chipMode").textContent  = modeName(currentMode);
+  $("chipState").textContent = stateName(currentState);
+  $("chipPot").textContent   = r.potPct.toFixed(1) + "%";
+  $("chipTrig").textContent  = r.triggerHeld ? "ON" : "OFF";
+  $("oMode").textContent  = modeName(currentMode);
+  $("oState").textContent = stateName(currentState);
+  $("oOut").textContent   = r.outputPct.toFixed(1) + "%";
+  $("oBot").textContent   = `Pot:  ${r.potPct.toFixed(1)}%\nRamp: ${rampPwm.toFixed(1)}%`;
+  $("potRaw").textContent = `ADC ${inputs.adc} · ${(inputs.adc / 4095 * 100).toFixed(1)}%`;
+}
+
+function frame(nowReal) {
+  // Fixed 20 ms steps like the firmware's delay(20); cap catch-up after a hidden tab.
+  acc += Math.min(nowReal - lastReal, 250);
+  lastReal = nowReal;
+  if (!paused) {
+    while (acc >= LOOP_MS) {
+      acc -= LOOP_MS;
+      simTime += LOOP_MS;
+      last = controllerStep(LOOP_MS);
+      history.push({ t: simTime, out: last.outputPct, ramp: rampPwm, pot: last.potPct });
+    }
+    while (history.length && history[0].t < simTime - WINDOW_MS) history.shift();
+  } else {
+    acc = 0;
+  }
+  if (last) render(last);
+  drawChart(simTime);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
